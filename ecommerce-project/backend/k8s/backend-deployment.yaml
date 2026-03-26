@@ -1,0 +1,79 @@
+# 后端Deployment：管理Pod，适配Dockerfile特性
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ecommerce-backend
+  namespace: default
+  labels:
+    app: ecommerce-backend
+spec:
+  replicas: 2  # 2个副本，高可用
+  selector:
+    matchLabels:
+      app: ecommerce-backend
+  strategy:
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: ecommerce-backend
+    spec:
+      containers:
+      - name: ecommerce-backend
+        # 本地构建的后端镜像名（需和你build的镜像名一致）
+        image: ecommerce-backend:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8083  # 应用端口（Dockerfile的EXPOSE 8083）
+        - containerPort: 8084  # 健康检查端口（Dockerfile的HEALTHCHECK端口）
+        resources:
+          limits:
+            cpu: "1"
+            memory: "1Gi"
+          requests:
+            cpu: "0.5"
+            memory: "512Mi"
+        # 存活探针：适配Dockerfile的/actuator/health（8084端口）
+        livenessProbe:
+          httpGet:
+            path: /actuator/health
+            port: 8084
+          initialDelaySeconds: 60  # Java应用启动慢，延长初始检测时间
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+        # 就绪探针：确保服务就绪后接收流量
+        readinessProbe:
+          httpGet:
+            path: /actuator/health
+            port: 8084
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 2
+        # 环境变量：和Dockerfile保持一致
+        env:
+        - name: MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE
+          value: "health,info"
+        - name: MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS
+          value: "always"
+
+---
+# 后端Service：暴露Pod，供前端访问（NodePort类型）
+apiVersion: v1
+kind: Service
+metadata:
+  name: ecommerce-backend-service
+  namespace: default
+spec:
+  selector:
+    app: ecommerce-backend  # 关联后端Deployment的标签
+  type: NodePort  # 本地测试用NodePort，生产可换ClusterIP/Ingress
+  ports:
+  - port: 8083  # Service端口（对应应用端口）
+    targetPort: 8083  # 容器内应用端口
+    nodePort: 30082  # 前端访问的后端端口（需记住这个端口）
+    protocol: TCP

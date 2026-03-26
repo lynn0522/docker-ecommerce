@@ -1,0 +1,119 @@
+pipeline {
+    agent any
+
+    environment {
+        DOCKER_REGISTRY = 'registry.example.com'
+        IMAGE_NAME = 'ecommerce-backend'
+        VERSION = "${BUILD_NUMBER}"
+        DOCKER_CREDENTIALS = credentials('docker-hub-credentials')
+    }
+
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        timeout(time: 30, unit: 'MINUTES')
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+                sh 'git log -1 --oneline'
+            }
+        }
+
+        stage('Build') {
+            steps {
+                sh 'mvn clean compile'
+            }
+            post {
+                success {
+                    echo 'Build successful!'
+                }
+                failure {
+                    echo 'Build failed!'
+                }
+            }
+        }
+
+        stage('Unit Test') {
+            steps {
+                sh 'mvn test'
+            }
+            post {
+                always {
+                    junit 'target/surefire-reports/*.xml'
+                }
+            }
+        }
+
+        stage('Integration Test') {
+            steps {
+                sh 'mvn verify -DskipUnitTests'
+            }
+            post {
+                always {
+                    junit 'target/failsafe-reports/*.xml'
+                }
+            }
+        }
+
+        stage('Package') {
+            steps {
+                sh 'mvn package -DskipTests'
+            }
+        }
+
+        stage('Code Quality') {
+            steps {
+                sh 'mvn checkstyle:check'
+                sh 'mvn pmd:check'
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    docker.build("${IMAGE_NAME}:${VERSION}", "-f Dockerfile.multistage .")
+                }
+            }
+        }
+
+        stage('Push Docker Image') {
+            steps {
+                script {
+                    docker.withRegistry("https://${DOCKER_REGISTRY}", "${DOCKER_CREDENTIALS}") {
+                        docker.image("${IMAGE_NAME}:${VERSION}").push()
+                        docker.image("${IMAGE_NAME}:${VERSION}").push('latest')
+                    }
+                }
+            }
+        }
+
+        stage('Deploy to Test') {
+            steps {
+                sh '''
+                docker-compose -f docker-compose.test.yml down
+                docker-compose -f docker-compose.test.yml up -d --build
+                sleep 30
+                curl -f http://localhost:8081/actuator/health || exit 1
+                '''
+            }
+        }
+    }
+
+    post {
+        always {
+            cleanWs()
+            echo 'Pipeline completed!'
+        }
+        success {
+            echo 'Pipeline succeeded!'
+        }
+        failure {
+            echo 'Pipeline failed!'
+            emailext body: "Build ${BUILD_NUMBER} failed. Check ${BUILD_URL}",
+                  subject: "Pipeline Failed: ${JOB_NAME} #${BUILD_NUMBER}",
+                  to: 'team@example.com'
+        }
+    }
+}

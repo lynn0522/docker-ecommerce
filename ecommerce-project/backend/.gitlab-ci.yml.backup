@@ -1,0 +1,93 @@
+stages:
+  - build
+  - test
+  - quality
+  - package
+  - deploy
+
+variables:
+  MAVEN_OPTS: "-Dmaven.repo.local=.m2/repository"
+  DOCKER_DRIVER: overlay2
+  DOCKER_HOST: tcp://docker:2375
+  DOCKER_TLS_CERTDIR: ""
+
+cache:
+  paths:
+    - .m2/repository/
+    - target/
+
+build:
+  stage: build
+  image: maven:3.8.5-openjdk-21
+  script:
+    - mvn clean compile
+  artifacts:
+    paths:
+      - target/
+
+unit-test:
+  stage: test
+  image: maven:3.8.5-openjdk-21
+  script:
+    - mvn test
+  artifacts:
+    reports:
+      junit: target/surefire-reports/*.xml
+
+integration-test:
+  stage: test
+  image: maven:3.8.5-openjdk-21
+  services:
+    - mysql:8.0
+  variables:
+    MYSQL_ROOT_PASSWORD: test123
+    MYSQL_DATABASE: ecommerce_test
+  script:
+    - mvn verify -DskipUnitTests
+  artifacts:
+    reports:
+      junit: target/failsafe-reports/*.xml
+
+sonarqube-check:
+  stage: quality
+  image: maven:3.8.5-openjdk-21
+  script:
+    - mvn sonar:sonar -Dsonar.projectKey=ecommerce-backend
+  only:
+    - main
+    - develop
+
+package:
+  stage: package
+  image: maven:3.8.5-openjdk-21
+  script:
+    - mvn package -DskipTests
+  artifacts:
+    paths:
+      - target/*.jar
+
+docker-build:
+  stage: package
+  image: docker:20.10
+  services:
+    - docker:20.10-dind
+  script:
+    - docker build -t $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA -f Dockerfile.multistage .
+    - docker push $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
+  only:
+    - main
+    - develop
+
+deploy-test:
+  stage: deploy
+  image: docker:20.10
+  services:
+    - docker:20.10-dind
+  script:
+    - docker-compose -f docker-compose.test.yml down
+    - docker-compose -f docker-compose.test.yml up -d --build
+    - sleep 30
+    - curl -f http://localhost:8081/actuator/health || exit 1
+  only:
+    - main
+    - develop

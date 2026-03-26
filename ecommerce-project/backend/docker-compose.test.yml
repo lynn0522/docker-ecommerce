@@ -1,0 +1,93 @@
+version: '3.8'
+
+services:
+  # 测试环境 MySQL
+  mysql-test:
+    image: mysql:8.0.35
+    container_name: ecommerce-mysql-test
+    environment:
+      MYSQL_ROOT_PASSWORD: test123
+      MYSQL_DATABASE: ecommerce_test
+      MYSQL_USER: test_user
+      MYSQL_PASSWORD: test123
+      MYSQL_TCP_PORT: 3306
+    ports:
+      - "3307:3306"
+    volumes:
+      - ./db/migration:/docker-entrypoint-initdb.d/migration
+      - ./db/optimization:/docker-entrypoint-initdb.d/optimization
+    command:
+      - --default-authentication-plugin=mysql_native_password
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --max_connections=200
+      - --innodb_buffer_pool_size=128M
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      timeout: 20s
+      retries: 10
+      interval: 10s
+      start_period: 30s
+
+  # 测试环境后端应用
+  backend-test:
+    build:
+      context: .
+      dockerfile: Dockerfile.multistage
+      args:
+        - APP_VERSION=test-${CI_COMMIT_SHORT_SHA:-local}
+        - BUILD_DATE=${CI_PIPELINE_CREATED_AT:-$(date -u +'%Y-%m-%dT%H:%M:%SZ')}
+    container_name: ecommerce-backend-test
+    environment:
+      SPRING_PROFILES_ACTIVE: test
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql-test:3306/ecommerce_test?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC&useUnicode=true&characterEncoding=UTF-8
+      SPRING_DATASOURCE_USERNAME: test_user
+      SPRING_DATASOURCE_PASSWORD: test123
+      SPRING_JPA_HIBERNATE_DDL_AUTO: update
+      SPRING_JPA_SHOW_SQL: "false"
+      SPRING_JPA_PROPERTIES_HIBERNATE_FORMAT_SQL: "true"
+      MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: health,info,metrics
+      MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: always
+      LOGGING_LEVEL_COM_ECOMMERCE: DEBUG
+      LOGGING_LEVEL_ORG_HIBERNATE_SQL: DEBUG
+      LOGGING_LEVEL_ORG_HIBERNATE_TYPE_DESCRIPTOR_SQL: TRACE
+    ports:
+      - "8081:8080"
+    depends_on:
+      mysql-test:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    volumes:
+      - ./logs/test:/var/log/ecommerce
+    command: >
+      sh -c "
+      echo '等待 MySQL 数据库就绪...' &&
+      while ! nc -z mysql-test 3306; do
+        echo '等待 MySQL...';
+        sleep 2;
+      done &&
+      echo 'MySQL 已就绪，启动应用...' &&
+      java -jar /app/app.jar
+      "
+
+  # 测试环境 API 测试工具（可选）
+  postman-test:
+    image: postman/newman:latest
+    container_name: ecommerce-postman-test
+    depends_on:
+      backend-test:
+        condition: service_healthy
+    volumes:
+      - ./postman:/etc/newman
+    command: 
+      - run
+      - /etc/newman/ecommerce-collection.json
+      - --environment=/etc/newman/ecommerce-test-env.json
+      - --reporters=cli,json
+      - --reporter-json-export=/etc/newman/report.json
+    restart: on-failure

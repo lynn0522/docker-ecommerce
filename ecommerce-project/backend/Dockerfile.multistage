@@ -1,0 +1,58 @@
+# ============================================
+# 多阶段构建：构建阶段
+# ============================================
+FROM maven:3.9-eclipse-temurin-21 AS builder
+
+# 构建参数
+ARG APP_VERSION=1.0.0
+ARG BUILD_DATE=unknown
+ARG BUILD_NUMBER=0
+
+WORKDIR /app
+
+# 1. 复制 pom.xml 并下载依赖（利用 Docker 缓存层）
+COPY pom.xml .
+RUN mvn dependency:go-offline -B
+
+# 2. 复制源代码并构建
+COPY src ./src
+RUN mvn clean package -DskipTests \
+    -Dapp.version=${APP_VERSION} \
+    -Dbuild.date=${BUILD_DATE} \
+    -Dbuild.number=${BUILD_NUMBER}
+
+# ============================================
+# 多阶段构建：运行时阶段
+# ============================================
+FROM eclipse-temurin:21-jre-jammy
+
+# 元数据标签
+LABEL maintainer="ecommerce-team@company.com" \
+      org.opencontainers.image.title="E-commerce Backend" \
+      org.opencontainers.image.description="Spring Boot E-commerce Backend Service" \
+      org.opencontainers.image.version="${APP_VERSION}" \
+      org.opencontainers.image.created="${BUILD_DATE}" \
+      org.opencontainers.image.source="https://gitlab.com/ecommerce/backend"
+
+# 创建非 root 用户运行应用
+RUN groupadd -r spring && useradd -r -g spring spring
+
+# 设置工作目录
+WORKDIR /app
+
+# 从构建阶段复制 jar 文件
+COPY --from=builder /app/target/*.jar app.jar
+
+# 设置文件权限
+RUN chown -R spring:spring /app
+USER spring:spring
+
+# 健康检查配置
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+  CMD curl -f http://localhost:8080/actuator/health || exit 1
+
+# 暴露端口
+EXPOSE 8080
+
+# 运行应用
+ENTRYPOINT ["java", "-jar", "app.jar"]

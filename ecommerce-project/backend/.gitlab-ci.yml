@@ -1,0 +1,177 @@
+# stages:
+#   - build
+#   - test
+#   - package
+#   - docker-build
+#   - docker-push
+
+# variables:
+#   MAVEN_OPTS: "-Dmaven.repo.local=.m2/repository"
+#   DOCKER_REGISTRY: registry.jihulab.com
+#   IMAGE_NAME: $DOCKER_REGISTRY/$CI_PROJECT_PATH
+#   TAG: $CI_COMMIT_SHORT_SHA
+
+# cache:
+#   paths:
+#     - .m2/repository/
+#   key: "$CI_COMMIT_REF_SLUG"
+
+# # 阶段1: 构建
+# build:
+#   stage: build
+#   image: maven:3.9.6-eclipse-temurin-21
+#   script:
+#     - echo "=== Spring Boot应用构建 ==="
+#     - mvn --version
+#     - mvn clean compile -DskipTests
+#     - echo "✅ 构建成功"
+#   artifacts:
+#     paths:
+#       - target/classes/
+
+# # 阶段2: 测试 - 只运行单元测试，跳过集成测试
+# test:
+#   stage: test
+#   image: maven:3.9.6-eclipse-temurin-21
+#   script:
+#     - echo "=== 运行单元测试（跳过集成测试）==="
+#     - echo "由于CI环境无数据库，跳过需要外部服务的测试"
+#     # 只运行单元测试，跳过集成测试
+#     - mvn test -Dtest="*Test" -DfailIfNoTests=false
+#   artifacts:
+#     when: always
+#     reports:
+#       junit:
+#         - target/surefire-reports/TEST-*.xml
+#   allow_failure: true  # 允许测试失败，流水线继续
+
+# # 阶段3: 打包
+# package:
+#   stage: package
+#   image: maven:3.9.6-eclipse-temurin-21
+#   script:
+#     - echo "=== 应用打包 ==="
+#     - mvn clean package -DskipTests
+#     - echo "✅ 生成JAR包：target/*.jar"
+#   artifacts:
+#     paths:
+#       - target/*.jar
+
+# # 阶段4: Docker 构建并推送
+# docker-build-push:
+#   stage: docker-build  # 注意：这里应该是已有的阶段名称
+#   image: docker:20.10
+#   services:
+#     - docker:20.10-dind
+#   script:
+#     - "echo '=== Docker镜像构建并推送 ==='"
+#     - "echo '镜像地址: $IMAGE_NAME'"
+#     - "echo '标签: $TAG'"
+#     - "docker --version"
+#     # 登录
+#     - "echo \"$CI_REGISTRY_PASSWORD\" | docker login $DOCKER_REGISTRY -u $CI_REGISTRY_USER --password-stdin"
+#     # 构建
+#     - "docker build -t $IMAGE_NAME:$TAG -t $IMAGE_NAME:latest ."
+#     # 推送
+#     - "docker push $IMAGE_NAME:$TAG"
+#     - "docker push $IMAGE_NAME:latest"
+#     - "echo '✅ Docker镜像构建并推送成功'"
+#     - "echo '镜像地址: $IMAGE_NAME:$TAG'"
+#   only:
+#     - main
+#     - develop
+#   dependencies:
+#     - package
+
+stages:
+  - build
+  - test
+  - package
+  - docker-build
+  - docker-push
+
+variables:
+  MAVEN_OPTS: "-Dmaven.repo.local=.m2/repository"
+  DOCKER_REGISTRY: registry.jihulab.com
+  # 改动1：镜像路径加入tyl，完全隔离
+  IMAGE_NAME: $DOCKER_REGISTRY/$CI_PROJECT_PATH/tyl
+  # 改动2：TAG加入tyl+分支+提交哈希，双重保障唯一
+  TAG: "tyl-${CI_COMMIT_REF_SLUG}-${CI_COMMIT_SHORT_SHA}"
+
+cache:
+  paths:
+    - .m2/repository/
+  key: "$CI_COMMIT_REF_SLUG"
+
+# 阶段1: 构建
+build:
+  stage: build
+  image: maven:3.9.6-eclipse-temurin-21
+  script:
+    - echo "=== Spring Boot应用构建 ==="
+    - mvn --version
+    - mvn clean compile -DskipTests
+    - echo "✅ 构建成功"
+  artifacts:
+    paths:
+      - target/classes/
+
+# 阶段2: 测试
+test:
+  stage: test
+  image: maven:3.9.6-eclipse-temurin-21
+  script:
+    - echo "=== 运行单元测试 ==="
+    - mvn test -Dtest="*UnitTest" -DfailIfNoTests=false
+  artifacts:
+    when: always
+    reports:
+      junit:
+        - target/surefire-reports/TEST-*.xml
+
+# 阶段3: 打包
+package:
+  stage: package
+  image: maven:3.9.6-eclipse-temurin-21
+  script:
+    - echo "=== 应用打包 ==="
+    - mvn clean package -DskipTests
+    - echo "✅ 生成JAR包：target/*.jar"
+  artifacts:
+    paths:
+      - target/*.jar
+  dependencies:
+    - build
+
+# 阶段4: Docker 构建
+docker-build:
+  stage: docker-build
+  image: docker:20.10
+  services:
+    - docker:20.10-dind
+  script:
+    - echo "=== Docker镜像构建（tyl专属）==="
+    - docker --version
+    - docker build -t $IMAGE_NAME:$TAG .
+  dependencies:
+    - package
+  only:
+    - main
+    - develop
+
+# 阶段5: Docker 推送
+docker-push:
+  stage: docker-push
+  image: docker:20.10
+  services:
+    - docker:20.10-dind
+  script:
+    - echo "=== Docker镜像推送（tyl专属）==="
+    - echo "$CI_REGISTRY_PASSWORD" | docker login $DOCKER_REGISTRY -u $CI_REGISTRY_USER --password-stdin
+    - docker push $IMAGE_NAME:$TAG
+    - echo "✅ 镜像推送成功：$IMAGE_NAME:$TAG"
+  only:
+    - main
+    - develop
+  dependencies:
+    - docker-build

@@ -1,0 +1,34 @@
+package com.ecommerce.backend;
+
+import org.junit.jupiter.api.Test;
+import org.springframework.boot.test.context.SpringBootTest;
+import static org.junit.jupiter.api.Assertions.*;
+
+@SpringBootTest  // 如果需要 Spring 上下文
+class BasicTest {
+
+    @Test
+    void testApplicationStarts() {
+        assertTrue(true);
+    }
+
+    @Test
+    void testBasicMath() {
+        assertEquals(4, 2 + 2);
+        assertNotEquals(5, 2 + 2);
+    }
+
+    @Test
+    void testStringOperations() {
+        String name = "E-Commerce";
+        assertNotNull(name);
+        assertTrue(name.contains("Commerce"));
+    }
+
+    @Test
+    void testArrayOperations() {
+        int[] numbers = {1, 2, 3, 4, 5};
+        assertEquals(5, numbers.length);
+        assertEquals(3, numbers[2]);
+    }
+}
