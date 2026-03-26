@@ -1,0 +1,25 @@
+global:
+  scrape_interval: 15s  # 监控数据抓取间隔（15秒一次）
+  evaluation_interval: 15s  # 规则评估间隔
+
+# 抓取配置：定义要监控的服务
+scrape_configs:
+  # 1. 前端Nginx监控
+  - job_name: 'frontend-nginx'
+    static_configs:
+      - targets: ['ecommerce-frontend:80']  # 前端容器名+端口（和docker-compose一致）
+    metrics_path: /metrics  # 对应nginx.conf中的/metrics接口
+    scrape_timeout: 5s
+
+  # 2. 后端SpringBoot监控（可选，如需监控后端可保留）
+  - job_name: 'backend-springboot'
+    static_configs:
+      - targets: ['ecommerce-backend:8083']  # 后端容器名+端口
+    metrics_path: /actuator/prometheus  # SpringBoot暴露监控数据的接口
+    scrape_timeout: 5s
+
+  # 3. MySQL监控（可选，如需监控数据库可保留）
+  - job_name: 'mysql'
+    static_configs:
+      - targets: ['ecommerce-mysql:3306']
+    scrape_timeout: 5s

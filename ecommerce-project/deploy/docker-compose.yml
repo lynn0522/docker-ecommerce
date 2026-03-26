@@ -1,0 +1,261 @@
+﻿# 完整的电商项目Docker Compose配置
+# 适配路径：C:\DD\ecommerce-project\frontend（前端）、C:\DD\ecommerce-project\backend（后端）
+# version: '3.8' 
+
+# 日志配置复用（所有服务通用）
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+# 环境变量复用（所有服务通用）
+x-common-environment: &common-env
+  TZ: ${TZ:-Asia/Shanghai}
+  SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-docker}
+  JAVA_OPTS: ${JAVA_OPTS:--Xmx512m -Xms256m}
+  MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: ${MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE:-health,info}
+
+services:
+  # ====================== 1. MySQL数据库服务 ======================
+  mysql:
+    image: mysql:8.0.35
+    container_name: ${APP_NAME:-ecommerce}-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-123456}
+      MYSQL_DATABASE: ${DB_NAME:-ecommerce}
+      MYSQL_USER: ${DB_USERNAME:-appuser}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-apppassword123}
+      MYSQL_ROOT_HOST: '%'
+      MYSQL_TCP_PORT: ${DB_PORT:-3306}
+      TZ: ${TZ:-Asia/Shanghai}
+    ports:
+      - "3300:3306"  # 固定端口，避免环境变量解析报错
+    volumes:
+      - mysql_data:/var/lib/mysql          # 数据持久化
+      - mysql_config:/etc/mysql/conf.d:ro
+      - ./logs/mysql:/var/log/mysql        # 日志挂载
+      - ./mysql/init.sql:/docker-entrypoint-initdb.d/init.sql  # 初始化脚本挂载
+    networks:
+      - ${NETWORK_NAME:-ecommerce-network}
+    command:
+      - --default-authentication-plugin=mysql_native_password
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --max_connections=1000
+      - --innodb_buffer_pool_size=256M
+      - --skip-name-resolve
+      - --default-time-zone=+8:00 # 补充时区配置，不加单引号
+    logging: *default-logging
+    ulimits:
+      nproc: 65535
+      nofile:
+        soft: 65535
+        hard: 65535
+    # 补充资源限制配置
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+  # ====================== 2. Spring Boot后端服务 ======================
+  backend:
+    image: tyl-ecommerce-backend:test
+    container_name: ${APP_NAME:-ecommerce}-backend
+    restart: unless-stopped
+    environment:
+      <<: *common-env
+      DB_HOST: ${DB_HOST:-mysql}
+      DB_PORT: ${DB_PORT:-3306}
+      DB_NAME: ${DB_NAME:-ecommerce}
+      DB_USERNAME: ${DB_USERNAME:-appuser}
+      DB_PASSWORD: ${DB_PASSWORD:-apppassword123}
+      SERVER_PORT: 8083  # 容器内固定端口（匹配application.properties）
+      LOGGING_LEVEL_COM_ECOMMERCE: ${LOG_LEVEL:-DEBUG}
+      LOGGING_FILE_NAME: /var/log/ecommerce/application.log
+    ports:
+      - "8084:8083"  # 固定端口，避免环境变量解析报错
+    depends_on:
+      - mysql
+    networks:
+      - ${NETWORK_NAME:-ecommerce-network}
+    volumes:
+      - ./logs/backend:/var/log/ecommerce  # 后端日志挂载
+      - ../backend/application-docker.properties:/app/config/application.properties:ro
+    # 核心修复：改用wget替代curl（openjdk镜像默认无curl）
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:8083/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s  # 给足启动时间
+    logging: *default-logging
+    labels:
+      - "com.ecommerce.description=E-commerce Backend Service"
+      - "com.ecommerce.version=${APP_VERSION:-1.0.0}"
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    command: >
+      sh -c "
+      echo 'Waiting for MySQL to be ready...' &&
+      for i in {1..30}; do
+        if nc -z mysql 3306; then
+          break
+        fi
+        sleep 2
+      done &&
+      echo 'MySQL is ready, starting application...' &&
+      java $${JAVA_OPTS} -jar /app/app.jar
+      "
+
+  # ====================== 3. 前端服务（核心新增） ======================
+  frontend:
+    build: ../frontend  # 适配新路径：deploy目录上级的frontend
+    container_name: ${APP_NAME:-ecommerce}-frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"  # 固定端口，避免环境变量解析报错
+    depends_on:
+      - backend  # 只依赖后端启动，不等待健康检查（解决启动阻塞）
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+    networks:
+      - ${NETWORK_NAME:-ecommerce-network}
+    # 前端健康检查用wget（避免curl问题）
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging: *default-logging
+    volumes:
+      - ./logs/frontend:/var/log/nginx  # 前端Nginx日志挂载
+    # 补充资源限制配置
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+  # ====================== 4. 数据库管理工具（phpmyadmin） ======================
+  phpmyadmin:
+    image: phpmyadmin/phpmyadmin:5.2.1
+    container_name: ${APP_NAME:-ecommerce}-phpmyadmin
+    restart: unless-stopped
+    depends_on:
+      - mysql
+    environment:
+      PMA_HOST: mysql
+      PMA_PORT: 3306
+      PMA_USER: root
+      PMA_PASSWORD: ${MYSQL_ROOT_PASSWORD:-123456}
+      PMA_ARBITRARY: 1
+      UPLOAD_LIMIT: 128M
+    ports:
+      - "8081:80"  # 固定端口，避免环境变量解析报错
+    networks:
+      - ${NETWORK_NAME:-ecommerce-network}
+    # phpmyadmin健康检查改用wget
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost/index.php"]  # 修复健康检查路径
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    # 补充资源限制配置
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+  # ====================== 5. 监控工具（prometheus） ======================
+  prometheus:
+    image: prom/prometheus:v2.45.0
+    container_name: ${APP_NAME:-ecommerce}-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - prometheus_data:/prometheus
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml  # 适配新路径
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    networks:
+      - ${NETWORK_NAME:-ecommerce-network}
+    # 补充资源限制配置
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+  # ====================== 6. 可视化监控（grafana） ======================
+  grafana:
+    image: grafana/grafana:10.0.3
+    container_name: ${APP_NAME:-ecommerce}-grafana
+    restart: unless-stopped
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin123}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    networks:
+      - ${NETWORK_NAME:-ecommerce-network}
+    depends_on:
+      - prometheus
+    # 补充资源限制配置
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+# ====================== 数据卷配置（持久化） ======================
+volumes:
+  mysql_data:
+    driver: local
+  mysql_config:
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+
+# ====================== 网络配置 ======================
+networks:
+  ecommerce-network:
+    driver: bridge
+    name: ${NETWORK_NAME:-ecommerce-network}
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
